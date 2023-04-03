@@ -15,27 +15,28 @@ def safe_text(txt):
   return re.sub('[^a-zA-Z0-9-_]', '_', txt)
 
 def run(command):
-  print(f"» {command}")
   child = subprocess.run(command, shell=True)
   return child.returncode
 
-def tsv_reader(filename):
+def tsv_reader(filename, header_only=False):
   with open(filename) as f:
     tsv = csv.reader(f, delimiter="\t")
+    fieldnames = next(tsv)
+    if header_only:
+      yield fieldnames
     for line in tsv:
       yield line
 
-def get_fieldnames(filename):
-  tsv = tsv_reader(filename)
-  return next(tsv)
+def inject_fields(cmd, row_n, line, field_func):
+  fields = [str(row_n), *[field_func(f) for f in line]]
+  for (i, field) in enumerate(fields):
+    cmd = cmd.replace(f"{{{i}}}", field)
+  return cmd
 
 def loop(filename, cmd, func, field_func):
   tsv = tsv_reader(filename)
-  next(tsv) # skip header line
   for row_n, line in enumerate(tsv, start=1):
-    cmd_n = cmd
-    for (i, field) in enumerate([str(row_n), *line]):
-      cmd_n = cmd_n.replace(f"{{{i}}}", field_func(field))
+    cmd_n = inject_fields(cmd, row_n, line, field_func)
     func(cmd_n)
 
 def main():
@@ -57,7 +58,8 @@ def main():
   pargs.add_argument("--escape", action="store_true", help="adjust the fields so it's safe to use them as paths (replace spaces with _ etc.)")
   args = pargs.parse_args()
 
-  fields = get_fieldnames(args.tsv_file)
+  fields = next(tsv_reader(args.tsv_file, header_only=True))
+
   do_perform = args.yes
 
   field_func = safe_text if args.escape else lambda f: f
@@ -67,27 +69,22 @@ def main():
     return 0
 
   if not do_perform:
-    loop(args.tsv_file, args.command, print, field_func)
+    tsv = tsv_reader(args.tsv_file)
+    for row_n, line in enumerate(tsv, start=1):
+      cmd_n = inject_fields(args.command, row_n, line, field_func)
+      print(cmd_n)
     print(print_available_fields(fields))
     do_perform = input("Perform (y/N)? ") in ['y', 'Y']
 
-  run_func = run
-  if not args.force:
-    def deco(f):
-      def inner(cmd):
-        ret = f(cmd)
-        if ret != 0:
-          raise ValueError(f"Command returned code: {ret}")
-        return ret
-      return inner
-    run_func = deco(run_func)
-
   if do_perform:
-    try:
-      loop(args.tsv_file, args.command, run_func, field_func)
-    except ValueError as e:
-      print(f"tsvcmd: {e}. Abort.", file=sys.stderr)
-      return 1
+    tsv = tsv_reader(args.tsv_file)
+    for row_n, line in enumerate(tsv, start=1):
+      cmd_n = inject_fields(args.command, row_n, line, field_func)
+      print(f"» {cmd_n}")
+      retcode = run(cmd_n)
+      if retcode != 0 and not args.force:
+        print(f"tsvcmd: process returned code: {retcode}. Abort.", file=sys.stderr)
+        return 1
 
   return 0
 
