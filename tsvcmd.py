@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""
+Execute a shell command for each line in a tsv file.
+Edoardo Nannotti 2023 - Public domain CC0
+"""
 import csv
 import sys
 import argparse
@@ -7,18 +11,24 @@ import subprocess
 import textwrap
 
 def print_available_fields(fields):
+  """Return the field summary as string
+  Input: ['Name', 'Surname']
+  Output: "{0}=(line number) {1}=Name {2}=Surname"
+  """
   return "Fields: " + " ".join([
     f"{{{i}}}={field}" for (i, field) in enumerate(['(line number)', *fields])
   ])
 
-def safe_text(txt):
+def escape_text(txt):
   return re.sub('[^a-zA-Z0-9-_]', '_', txt)
 
 def run(command):
+  """Run a shell command, return its return code"""
   child = subprocess.run(command, shell=True)
   return child.returncode
 
 def tsv_reader(filename, header_only=False):
+  """Yield a list of fields for each tsv line"""
   with open(filename) as f:
     tsv = csv.reader(f, delimiter="\t")
     fieldnames = next(tsv)
@@ -27,17 +37,24 @@ def tsv_reader(filename, header_only=False):
     for line in tsv:
       yield line
 
-def inject_fields(cmd, row_n, line, field_func):
-  fields = [str(row_n), *[field_func(f) for f in line]]
+def inject_fields(cmd, row_n, line, field_func=None):
+  """Replace the placeholders in cmd with the fields in the list line
+  E.g.:
+  >>> inject_fields('mv {0}.pdf {1}-{2}.pdf', 5, ['John', 'Al Bano'], escape_text)
+  "mv 5.pdf John-Al_Bano.pdf"
+  """
+  if field_func:
+    line = [field_func(f) for f in line]
+  fields = [str(row_n), *line]
   for (i, field) in enumerate(fields):
     cmd = cmd.replace(f"{{{i}}}", field)
   return cmd
 
-def loop(filename, cmd, func, field_func):
+def loop(filename, cmd, field_func=None):
   tsv = tsv_reader(filename)
   for row_n, line in enumerate(tsv, start=1):
     cmd_n = inject_fields(cmd, row_n, line, field_func)
-    func(cmd_n)
+    yield cmd_n
 
 def main():
 
@@ -60,28 +77,28 @@ def main():
 
   fields = next(tsv_reader(args.tsv_file, header_only=True))
 
-  do_perform = args.yes
-
-  field_func = safe_text if args.escape else lambda f: f
-
   if args.command == None:
+    # only tsv provided: print the fields summary
     print(print_available_fields(fields))
     return 0
 
-  if not do_perform:
-    tsv = tsv_reader(args.tsv_file)
-    for row_n, line in enumerate(tsv, start=1):
-      cmd_n = inject_fields(args.command, row_n, line, field_func)
-      print(cmd_n)
-    print(print_available_fields(fields))
-    do_perform = input("Perform (y/N)? ") in ['y', 'Y']
+  loop_args = dict(
+    filename=args.tsv_file,
+    cmd=args.command,
+    field_func=escape_text if args.escape else None
+  )
 
-  if do_perform:
-    tsv = tsv_reader(args.tsv_file)
-    for row_n, line in enumerate(tsv, start=1):
-      cmd_n = inject_fields(args.command, row_n, line, field_func)
-      print(f"» {cmd_n}")
-      retcode = run(cmd_n)
+  confirm = False
+  if not args.yes:
+    for cmd in loop(**loop_args):
+      print(cmd)
+    print(print_available_fields(fields))
+    confirm = input("Perform (y/N)? ") in ['y', 'Y']
+
+  if confirm or args.yes:
+    for cmd in loop(**loop_args):
+      print(f"» {cmd}")
+      retcode = run(cmd)
       if retcode != 0 and not args.force:
         print(f"tsvcmd: process returned code: {retcode}. Abort.", file=sys.stderr)
         return 1
